@@ -1,0 +1,292 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ───────── Enums ─────────
+
+enum BusinessType {
+  IP   // ИП
+  OOO  // ООО
+}
+
+enum LeadSource {
+  AVITO
+  WEBSITE
+  REFERRAL
+  TELEGRAM
+  ADS
+  OTHER
+}
+
+enum LeadStatus {
+  NEW
+  CONTACTED
+  QUALIFIED
+  PROPOSAL
+  NEGOTIATION
+  WON
+  LOST
+}
+
+enum ServiceType {
+  FULL_ACCOUNTING   // Ведение бухгалтерии
+  TAX_REPORTING     // Сдача отчётности
+  PAYROLL           // Зарплата и кадры
+  REGISTRATION      // Регистрация / ликвидация
+  CONSULTING        // Консультации
+  OTHER
+}
+
+enum TaxSystem {
+  USN_INCOME          // УСН «Доходы»
+  USN_INCOME_EXPENSE  // УСН «Доходы – расходы»
+  PATENT
+  OSNO
+  AUSN
+  NPD
+  OTHER
+}
+
+enum ContractStatus {
+  ACTIVE
+  PAUSED
+  TERMINATED
+}
+
+enum DealStatus {
+  OPEN
+  WON
+  LOST
+}
+
+enum TaskPriority {
+  LOW
+  MEDIUM
+  HIGH
+}
+
+enum TaskStatus {
+  TODO
+  DONE
+  CANCELLED
+}
+
+enum MessageDirection {
+  INBOUND
+  OUTBOUND
+}
+
+enum MessageDeliveryStatus {
+  PENDING
+  SENT
+  FAILED
+}
+
+enum IntegrationType {
+  AVITO
+  TELEGRAM
+}
+
+enum ActivityType {
+  LEAD_CREATED
+  LEAD_UPDATED
+  STATUS_CHANGED
+  LEADS_MERGED
+  CLIENT_CREATED
+  TASK_CREATED
+  TASK_COMPLETED
+  MESSAGE_RECEIVED
+  MESSAGE_SENT
+  NOTE
+}
+
+// ───────── Models ─────────
+
+model User {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  passwordHash String
+  name         String
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  leads      Lead[]
+  clients    Client[]
+  tasks      Task[]
+  activities Activity[]
+}
+
+model Lead {
+  id           String        @id @default(cuid())
+  ownerId      String
+  name         String
+  phone        String?
+  company      String?
+  businessType BusinessType?
+  city         String?
+  source       LeadSource    @default(OTHER)
+  service      ServiceType?
+  budget       Int?          // ₽ в месяц
+  status       LeadStatus    @default(NEW)
+  lostReason   String?
+  comment      String?
+  receivedAt   DateTime      @default(now())
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+
+  // при слиянии дублей запись не удаляется, а ссылается на основную
+  mergedIntoId String?
+  mergedInto   Lead?  @relation("LeadMerge", fields: [mergedIntoId], references: [id])
+  mergedFrom   Lead[] @relation("LeadMerge")
+
+  owner         User           @relation(fields: [ownerId], references: [id])
+  deals         Deal[]
+  client        Client?
+  tasks         Task[]
+  conversations Conversation[]
+  activities    Activity[]
+
+  @@index([status])
+  @@index([phone])
+  @@index([source])
+  @@index([receivedAt])
+}
+
+model Client {
+  id             String         @id @default(cuid())
+  ownerId        String
+  leadId         String?        @unique   // первоначальная заявка
+  name           String
+  inn            String?
+  businessType   BusinessType?
+  taxSystem      TaxSystem?
+  services       ServiceType[]
+  monthlyFee     Int            // ₽ в месяц, согласованная стоимость
+  startDate      DateTime
+  contractStatus ContractStatus @default(ACTIVE)
+  phone          String?
+  email          String?
+  contactPerson  String?
+  notes          String?
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+
+  owner      User       @relation(fields: [ownerId], references: [id])
+  lead       Lead?      @relation(fields: [leadId], references: [id])
+  deals      Deal[]
+  tasks      Task[]
+  activities Activity[]
+
+  @@index([contractStatus])
+}
+
+model Deal {
+  id         String     @id @default(cuid())
+  leadId     String
+  clientId   String?
+  title      String
+  amount     Int?       // ожидаемая / согласованная сумма в месяц
+  status     DealStatus @default(OPEN)
+  lostReason String?
+  openedAt   DateTime   @default(now())
+  closedAt   DateTime?
+  createdAt  DateTime   @default(now())
+  updatedAt  DateTime   @updatedAt
+
+  lead   Lead    @relation(fields: [leadId], references: [id])
+  client Client? @relation(fields: [clientId], references: [id])
+
+  @@index([status])
+}
+
+model Task {
+  id          String       @id @default(cuid())
+  ownerId     String
+  title       String
+  description String?
+  leadId      String?
+  clientId    String?
+  dueAt       DateTime
+  priority    TaskPriority @default(MEDIUM)
+  status      TaskStatus   @default(TODO)
+  notifiedAt  DateTime?    // когда отправлено напоминание в Telegram
+  completedAt DateTime?
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+
+  owner  User    @relation(fields: [ownerId], references: [id])
+  lead   Lead?   @relation(fields: [leadId], references: [id])
+  client Client? @relation(fields: [clientId], references: [id])
+
+  @@index([status, dueAt])
+}
+
+model Conversation {
+  id         String   @id @default(cuid())
+  leadId     String
+  source     LeadSource @default(AVITO)
+  externalId String   // ID диалога во внешней системе
+  interlocutorName String?
+  lastMessageAt DateTime?
+  lastMessagePreview String?
+  unread     Int      @default(0)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  lead     Lead      @relation(fields: [leadId], references: [id])
+  messages Message[]
+
+  @@unique([source, externalId])
+}
+
+model Message {
+  id             String                @id @default(cuid())
+  conversationId String
+  externalId     String?               // ID сообщения в Авито — защита от дублей
+  direction      MessageDirection
+  text           String
+  deliveryStatus MessageDeliveryStatus @default(SENT)
+  sentAt         DateTime
+  createdAt      DateTime              @default(now())
+
+  conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  @@unique([conversationId, externalId])
+  @@index([conversationId, sentAt])
+}
+
+model Integration {
+  id           String          @id @default(cuid())
+  type         IntegrationType @unique
+  enabled      Boolean         @default(false)
+  // токены и настройки; доступ только с сервера
+  accessToken  String?
+  refreshToken String?
+  expiresAt    DateTime?
+  settings     Json?
+  createdAt    DateTime        @default(now())
+  updatedAt    DateTime        @updatedAt
+}
+
+model Activity {
+  id        String       @id @default(cuid())
+  userId    String?
+  leadId    String?
+  clientId  String?
+  type      ActivityType
+  message   String
+  meta      Json?
+  createdAt DateTime     @default(now())
+
+  user   User?   @relation(fields: [userId], references: [id])
+  lead   Lead?   @relation(fields: [leadId], references: [id])
+  client Client? @relation(fields: [clientId], references: [id])
+
+  @@index([createdAt])
+  @@index([leadId])
+}
